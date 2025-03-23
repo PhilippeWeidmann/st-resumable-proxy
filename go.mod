@@ -1,3 +1,3 @@
 module github.com/PhilippeWeidmann/st-resumable-proxy
 
-go 1.19
+go 1.24.1
