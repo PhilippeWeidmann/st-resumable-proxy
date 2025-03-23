@@ -1,29 +1,28 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-
-	"github.com/google/uuid"
 )
 
 func main() {
 	http.HandleFunc("/upload", uploadHandler)
-	fmt.Println("Server started on :8080")
 	http.ListenAndServe(":8080", nil)
 }
 
 func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
-	containerUUID := uuid.New().String()
-	containerPath := fmt.Sprintf("containers/%s", containerUUID)
+	uploadHost := r.Header.Get("x-upload-host")
 
-	err := os.MkdirAll(containerPath, os.ModePerm)
-	if err != nil {
-		http.Error(w, "Error creating directory", http.StatusInternalServerError)
+	q := r.URL.Query()
+	containerUUID := q.Get("containerUUID")
+	uploadFileUUID := q.Get("uploadFileUUID")
+
+	if uploadHost == "" || containerUUID == "" || uploadFileUUID == "" {
+		http.Error(w, "Missing required query parameters", http.StatusBadRequest)
 		return
 	}
 
@@ -42,8 +41,7 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Flush a full chunk
 		for len(chunkBuffer) >= chunkSize {
-			chunkFilePath := fmt.Sprintf("%s/%d", containerPath, chunkIndex)
-			if err := writeChunk(chunkFilePath, chunkBuffer[:chunkSize]); err != nil {
+			if err := writeRemoteChunk(uploadHost, containerUUID, uploadFileUUID, chunkIndex, false, chunkBuffer[:chunkSize]); err != nil {
 				http.Error(w, "Error writing chunk", http.StatusInternalServerError)
 				return
 			}
@@ -58,23 +56,40 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Write any leftover chunk
 	if len(chunkBuffer) > 0 {
-		chunkFilePath := fmt.Sprintf("%s/%d", containerPath, chunkIndex)
-		if err := writeChunk(chunkFilePath, chunkBuffer); err != nil {
+		if err := writeRemoteChunk(uploadHost, containerUUID, uploadFileUUID, chunkIndex, true, chunkBuffer); err != nil {
 			http.Error(w, "Error writing final chunk", http.StatusInternalServerError)
 			return
 		}
 	}
-
-	fmt.Fprintln(w, "Upload complete.")
 }
 
-func writeChunk(path string, data []byte) error {
-	chunkFile, err := os.Create(path)
+func writeRemoteChunk(uploadHost string, containerUUID string, uploadFileUUID string, chunkIndex int, isLastChunk bool, data []byte) error {
+	rawLastChunk := 0
+	if isLastChunk {
+		rawLastChunk = 1
+	}
+
+	uploadURL := fmt.Sprintf("https://%s/api/uploadChunk/%s/%s/%d/%d", uploadHost, containerUUID, uploadFileUUID, chunkIndex, rawLastChunk)
+
+	req, err := http.NewRequest("POST", uploadURL, bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
-	defer chunkFile.Close()
 
-	_, err = chunkFile.Write(data)
-	return err
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("User-Agent", "ST-Resumable-Proxy/1.0")
+
+	httpClient := &http.Client{}
+	resp, err := httpClient.Do(req)
+
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		return fmt.Errorf("upload failed, got status: %d", resp.StatusCode)
+	}
+
+	return nil
 }
