@@ -12,7 +12,69 @@ const chunkSize = 50 * 1024 * 1024
 
 func main() {
 	http.HandleFunc("/upload", uploadHandler)
+	http.HandleFunc("/upload/resume", uploadResumableHandler)
 	http.ListenAndServe(":8080", nil)
+}
+
+func uploadResumableHandler(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
+	uploadHost := r.Header.Get("x-upload-host")
+
+	q := r.URL.Query()
+	containerUUID := q.Get("containerUUID")
+	uploadFileUUID := q.Get("uploadFileUUID")
+
+	if uploadHost == "" || containerUUID == "" || uploadFileUUID == "" {
+		http.Error(w, "Missing required query parameters", http.StatusBadRequest)
+		return
+	}
+
+	if r.Method == http.MethodHead {
+		uploadOffset := getServerOffset(uploadHost, containerUUID, uploadFileUUID)
+
+		w.Header().Set("Upload-Complete", "?0")
+		w.Header().Set("Upload-Offset", strconv.FormatInt(uploadOffset, 10))
+		w.WriteHeader(200)
+	} else if r.Method == http.MethodPatch {
+		uploadOffset, ok := getClientOffset(r)
+		if !ok {
+			w.WriteHeader(400)
+			w.Write([]byte("invalid or missing Upload-Offset header\n"))
+			return
+		}
+
+		//TODO write chunks
+		w.Header().Set("Upload-Complete", "?1")
+		w.Header().Set("Upload-Offset", strconv.FormatInt(uploadOffset, 10))
+		w.WriteHeader(200)
+	} else {
+		fmt.Println("Invalid request method")
+		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+	}
+}
+
+func getClientOffset(r *http.Request) (int64, bool) {
+	offset, err := strconv.Atoi(r.Header.Get("Upload-Offset"))
+	if err != nil {
+		return 0, false
+	}
+	return int64(offset), true
+}
+
+func getServerOffset(uploadHost string, containerUUID string, uploadFileUUID string) int64 {
+	var offset int64
+	chunkIndex := 0
+
+	for {
+		if !checkChunkExists(uploadHost, containerUUID, uploadFileUUID, chunkIndex) {
+			break
+		}
+		offset += chunkSize
+		chunkIndex++
+	}
+
+	return offset
 }
 
 func uploadHandler(w http.ResponseWriter, r *http.Request) {
@@ -35,7 +97,9 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	resumeUploadUrl := fmt.Sprintf("http://proxyman.debug:8080/upload/resume?containerUUID=%s&uploadFileUUID=%s", containerUUID, uploadFileUUID)
 
 	w.Header().Set("Location", resumeUploadUrl)
+	w.Header().Set("Upload-Draft-Interop-Version", "6")
 	w.WriteHeader(104)
+	w.Header().Del("Upload-Draft-Interop-Version")
 
 	chunkIndex := 0
 	chunkBuffer := make([]byte, 0, chunkSize)
@@ -71,6 +135,9 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	w.Header().Set("Upload-Complete", "?1")
+	w.WriteHeader(201)
 }
 
 func writeRemoteChunk(uploadHost string, containerUUID string, uploadFileUUID string, chunkIndex int, isLastChunk bool, data []byte) error {
