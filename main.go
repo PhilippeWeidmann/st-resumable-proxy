@@ -1,11 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
+	"time"
 )
 
 const chunkSize = 50 * 1024 * 1024
@@ -154,60 +155,30 @@ func ingestChunks(startIndex int, r *http.Request, w http.ResponseWriter, upload
 }
 
 func writeRemoteChunk(uploadHost string, containerUUID string, uploadFileUUID string, chunkIndex int, isLastChunk bool, data []byte) error {
-	rawLastChunk := 0
-	if isLastChunk {
-		rawLastChunk = 1
+	chunkDirectoryPath := fmt.Sprintf("%s/%s", containerUUID, uploadFileUUID)
+	if _, err := os.Stat(chunkDirectoryPath); os.IsNotExist(err) {
+		os.MkdirAll(chunkDirectoryPath, 0755)
 	}
 
-	uploadURL := fmt.Sprintf("https://%s/api/uploadChunk/%s/%s/%d/%d", uploadHost, containerUUID, uploadFileUUID, chunkIndex, rawLastChunk)
+	chunkFilePath := fmt.Sprintf("%s/%s/%d", containerUUID, uploadFileUUID, chunkIndex)
 
-	req, err := http.NewRequest("POST", uploadURL, bytes.NewReader(data))
+	chunkFile, err := os.Create(chunkFilePath)
 	if err != nil {
 		return err
 	}
+	defer chunkFile.Close()
 
-	req.Header.Set("Content-Type", "application/octet-stream")
-	req.Header.Set("User-Agent", "ST-Resumable-Proxy/1.0")
-
-	httpClient := &http.Client{}
-	resp, err := httpClient.Do(req)
-
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("upload failed, got status: %d", resp.StatusCode)
-	}
-
-	return nil
+	_, err = chunkFile.Write(data)
+	time.Sleep(1 * time.Second)
+	return err
 }
 
 func checkChunkExists(uploadHost string, containerUUID string, uploadFileUUID string, chunkIndex int) bool {
-	// We always check for a size of 50mo because we don't know the size of the last chunk, if it's less than 50mo we will get a 404 and client will retry from scratch
-	chunkExistsURL := fmt.Sprintf("https://%s/api/mobile/containers/%s/files/%s/chunks/%d/exists?chunk_size=%d", uploadHost, containerUUID, uploadFileUUID, chunkIndex, chunkSize)
+	chunkFilePath := fmt.Sprintf("%s/%s/%d", containerUUID, uploadFileUUID, chunkIndex)
 
-	req, err := http.NewRequest("GET", chunkExistsURL, nil)
-	if err != nil {
+	if _, err := os.Stat(chunkFilePath); os.IsNotExist(err) {
 		return false
 	}
 
-	req.Header.Set("User-Agent", "ST-Resumable-Proxy/1.0")
-
-	httpClient := &http.Client{}
-	resp, err := httpClient.Do(req)
-
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		fmt.Println("Error reading response body:", err)
-		return false
-	}
-
-	return string(body) == "true"
+	return true
 }
