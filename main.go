@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 )
+
+const chunkSize = 50 * 1024 * 1024
 
 func main() {
 	http.HandleFunc("/upload", uploadHandler)
@@ -26,7 +29,6 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chunkSize := 50 * 1024 * 1024
 	chunkIndex := 0
 	chunkBuffer := make([]byte, 0, chunkSize)
 
@@ -92,4 +94,32 @@ func writeRemoteChunk(uploadHost string, containerUUID string, uploadFileUUID st
 	}
 
 	return nil
+}
+
+func checkChunkExists(uploadHost string, containerUUID string, uploadFileUUID string, chunkIndex int) bool {
+	// We always check for a size of 50mo because we don't know the size of the last chunk, if it's less than 50mo we will get a 404 and client will retry from scratch
+	chunkExistsURL := fmt.Sprintf("https://%s/api/mobile/containers/%s/files/%s/chunks/%d/exists?chunk_size=%d", uploadHost, containerUUID, uploadFileUUID, chunkIndex, chunkSize)
+
+	req, err := http.NewRequest("GET", chunkExistsURL, nil)
+	if err != nil {
+		return false
+	}
+
+	req.Header.Set("User-Agent", "ST-Resumable-Proxy/1.0")
+
+	httpClient := &http.Client{}
+	resp, err := httpClient.Do(req)
+
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Println("Error reading response body:", err)
+		return false
+	}
+
+	return string(body) == "true"
 }
