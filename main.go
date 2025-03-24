@@ -19,15 +19,23 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	uploadHost := r.Header.Get("x-upload-host")
+	rawContentLength := r.Header.Get("content-length")
 
 	q := r.URL.Query()
 	containerUUID := q.Get("containerUUID")
 	uploadFileUUID := q.Get("uploadFileUUID")
 
-	if uploadHost == "" || containerUUID == "" || uploadFileUUID == "" {
+	contentLength, err := strconv.Atoi(rawContentLength)
+
+	if uploadHost == "" || containerUUID == "" || uploadFileUUID == "" || rawContentLength == "" || err != nil || contentLength <= 0 {
 		http.Error(w, "Missing required query parameters", http.StatusBadRequest)
 		return
 	}
+
+	resumeUploadUrl := fmt.Sprintf("http://proxyman.debug:8080/upload/resume?containerUUID=%s&uploadFileUUID=%s", containerUUID, uploadFileUUID)
+
+	w.Header().Set("Location", resumeUploadUrl)
+	w.WriteHeader(104)
 
 	chunkIndex := 0
 	chunkBuffer := make([]byte, 0, chunkSize)
