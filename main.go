@@ -44,9 +44,11 @@ func uploadResumableHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		//TODO write chunks
+		chunkIndex := int(uploadOffset / chunkSize)
+		fmt.Println("Resuming upload at chunk", chunkIndex)
+		ingestChunks(chunkIndex, r, w, uploadHost, containerUUID, uploadFileUUID)
+
 		w.Header().Set("Upload-Complete", "?1")
-		w.Header().Set("Upload-Offset", strconv.FormatInt(uploadOffset, 10))
 		w.WriteHeader(200)
 	} else {
 		fmt.Println("Invalid request method")
@@ -101,7 +103,14 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(104)
 	w.Header().Del("Upload-Draft-Interop-Version")
 
-	chunkIndex := 0
+	ingestChunks(0, r, w, uploadHost, containerUUID, uploadFileUUID)
+
+	w.Header().Set("Upload-Complete", "?1")
+	w.WriteHeader(201)
+}
+
+func ingestChunks(startIndex int, r *http.Request, w http.ResponseWriter, uploadHost string, containerUUID string, uploadFileUUID string) {
+	chunkIndex := startIndex
 	chunkBuffer := make([]byte, 0, chunkSize)
 
 	for {
@@ -135,9 +144,6 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-
-	w.Header().Set("Upload-Complete", "?1")
-	w.WriteHeader(201)
 }
 
 func writeRemoteChunk(uploadHost string, containerUUID string, uploadFileUUID string, chunkIndex int, isLastChunk bool, data []byte) error {
