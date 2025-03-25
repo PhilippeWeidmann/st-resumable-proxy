@@ -45,8 +45,12 @@ func uploadResumableHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		chunkIndex := int(uploadOffset / chunkSize)
-		fmt.Println("Resuming upload at chunk", chunkIndex)
-		ingestChunks(chunkIndex, r, w, uploadHost, containerUUID, uploadFileUUID)
+
+		ingestError := ingestChunks(chunkIndex, r, w, uploadHost, containerUUID, uploadFileUUID)
+		if ingestError != nil {
+			http.Error(w, "Server error", http.StatusInternalServerError)
+			return
+		}
 
 		w.Header().Set("Upload-Complete", "?1")
 		w.WriteHeader(200)
@@ -103,13 +107,17 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(104)
 	w.Header().Del("Upload-Draft-Interop-Version")
 
-	ingestChunks(0, r, w, uploadHost, containerUUID, uploadFileUUID)
+	ingestError := ingestChunks(0, r, w, uploadHost, containerUUID, uploadFileUUID)
+	if ingestError != nil {
+		http.Error(w, "Server error", http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Upload-Complete", "?1")
 	w.WriteHeader(201)
 }
 
-func ingestChunks(startIndex int, r *http.Request, w http.ResponseWriter, uploadHost string, containerUUID string, uploadFileUUID string) {
+func ingestChunks(startIndex int, r *http.Request, w http.ResponseWriter, uploadHost string, containerUUID string, uploadFileUUID string) error {
 	chunkIndex := startIndex
 	chunkBuffer := make([]byte, 0, chunkSize)
 
@@ -117,16 +125,14 @@ func ingestChunks(startIndex int, r *http.Request, w http.ResponseWriter, upload
 		buf := make([]byte, 4096)
 		n, readErr := r.Body.Read(buf)
 		if readErr != nil && readErr != io.EOF {
-			http.Error(w, "Error reading body", http.StatusInternalServerError)
-			return
+			return fmt.Errorf("error reading body: %v", readErr)
 		}
 		chunkBuffer = append(chunkBuffer, buf[:n]...)
 
 		// Flush a full chunk
 		for len(chunkBuffer) >= chunkSize {
 			if err := writeRemoteChunk(uploadHost, containerUUID, uploadFileUUID, chunkIndex, false, chunkBuffer[:chunkSize]); err != nil {
-				http.Error(w, "Error writing chunk", http.StatusInternalServerError)
-				return
+				return fmt.Errorf("error writing chunk %v", err)
 			}
 			chunkBuffer = chunkBuffer[chunkSize:]
 			chunkIndex++
@@ -140,10 +146,11 @@ func ingestChunks(startIndex int, r *http.Request, w http.ResponseWriter, upload
 	// Write any leftover chunk
 	if len(chunkBuffer) > 0 {
 		if err := writeRemoteChunk(uploadHost, containerUUID, uploadFileUUID, chunkIndex, true, chunkBuffer); err != nil {
-			http.Error(w, "Error writing final chunk", http.StatusInternalServerError)
-			return
+			return fmt.Errorf("error writing final chunk: %v", err)
 		}
 	}
+
+	return nil
 }
 
 func writeRemoteChunk(uploadHost string, containerUUID string, uploadFileUUID string, chunkIndex int, isLastChunk bool, data []byte) error {
